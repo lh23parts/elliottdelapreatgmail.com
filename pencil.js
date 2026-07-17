@@ -5,6 +5,7 @@
   var CLOSE_DIST = 46;      // px gap that still counts as a closed loop
   var MIN_LOOP = 200;       // min drawn length before a loop can close
   var TIP = { x: 4, y: 87 };
+  var BOAT_KEY = 'elliott-boat';
 
   // ---- pencil cursor ----
   var pencil = document.createElement('img');
@@ -29,25 +30,36 @@
   window.addEventListener('resize', fit);
   fit();
 
+  var trail = [];        // {x,y,t,brk} fading lead mark; brk = new stroke
+  var marks = [];        // permanent polylines: arrays of {x,y}
+  var path = [];         // recent gesture for loop detection
+  var lastClient = null;
+  var frozen = false;
+  var pendingBreak = false;
+  var lastTouchT = -1e9;
+
+  // boat drawing mode (pages with <body data-draw="boat">)
+  var drawMode = false;
+  var drawing = null;    // stroke in progress: array of {x,y}
+  var boatStrokes = [];  // everything inked in draw mode
+  var doneLink = null;
+
+  function now() { return performance.now(); }
+
   function mount() {
     document.body.appendChild(pencil);
     document.body.appendChild(canvas);
     // the page is a drawing surface: fingers draw, they don't pan or zoom
     document.documentElement.style.touchAction = 'none';
     document.body.style.touchAction = 'none';
+    drawMode = document.body.getAttribute('data-draw') === 'boat';
+    if (drawMode) {
+      makeDoneLink();
+      loadBoat();
+    }
   }
   if (document.body) { mount(); }
   else { document.addEventListener('DOMContentLoaded', mount); }
-
-  var trail = [];   // {x,y,t,brk} in page coords; brk = start of a new stroke
-  var marks = [];   // permanent polylines: arrays of {x,y}
-  var path = [];    // recent gesture for loop detection
-  var lastClient = null;
-  var frozen = false;
-  var pendingBreak = false;
-  var lastTouchT = -1e9;
-
-  function now() { return performance.now(); }
 
   function movePencil(clientX, clientY) {
     pencil.style.display = 'block';
@@ -62,7 +74,7 @@
     trail.push({ x: px, y: py, t: t, brk: !!brk });
     path.push({ x: px, y: py, t: t });
     while (path.length && t - path[0].t > PATH_MS) path.shift();
-    checkLoop();
+    if (!drawMode) checkLoop();
   }
 
   // a click (or a quick tap) leaves a little scribbled knot
@@ -73,6 +85,91 @@
       pts.push({ x: px + Math.cos(a) * r, y: py + Math.sin(a) * r * 0.8 });
     }
     marks.push(pts);
+    if (drawMode) {
+      boatStrokes.push(pts);
+      boatChanged();
+    }
+  }
+
+  // ---- boat inking ----
+  function onDoneLink(target) {
+    return doneLink && (target === doneLink || doneLink.contains(target));
+  }
+
+  function startStroke(px, py) {
+    drawing = [{ x: px, y: py }];
+    marks.push(drawing);           // renders live as it grows
+  }
+
+  function extendStroke(px, py) {
+    var last = drawing[drawing.length - 1];
+    if (Math.abs(last.x - px) < 2 && Math.abs(last.y - py) < 2) return;
+    drawing.push({ x: px, y: py });
+  }
+
+  function endStroke() {
+    if (!drawing) return;
+    var len = 0;
+    for (var i = 1; i < drawing.length; i++) {
+      len += Math.hypot(drawing[i].x - drawing[i - 1].x, drawing[i].y - drawing[i - 1].y);
+    }
+    if (len < 5) {                 // a press without a drag is just a pencil dot
+      var p = drawing[0];
+      marks.splice(marks.indexOf(drawing), 1);
+      knotAt(p.x, p.y);
+    } else {
+      boatStrokes.push(drawing);
+      boatChanged();
+    }
+    drawing = null;
+    pendingBreak = true;
+  }
+
+  function boatChanged() {
+    if (!doneLink) return;
+    doneLink.textContent = 'done — keep my boat';
+    doneLink.style.display = 'block';
+  }
+
+  function makeDoneLink() {
+    doneLink = document.createElement('button');
+    doneLink.type = 'button';
+    doneLink.style.cssText =
+      'position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:10001;' +
+      "font-family:'Shadows Into Light',cursive;font-size:1.6rem;color:#2f2f2f;" +
+      'background:none;border:none;padding:8px 14px;text-decoration:underline;' +
+      'cursor:none;display:none;';
+    doneLink.addEventListener('click', function () {
+      saveBoat();
+      doneLink.textContent = 'your boat is kept for the adventure';
+    });
+    document.body.appendChild(doneLink);
+  }
+
+  function saveBoat() {
+    try {
+      localStorage.setItem(BOAT_KEY, JSON.stringify({
+        w: window.innerWidth, h: window.innerHeight, strokes: boatStrokes
+      }));
+    } catch (e) { /* private mode etc. — the boat sails this session only */ }
+  }
+
+  function loadBoat() {
+    var d;
+    try { d = JSON.parse(localStorage.getItem(BOAT_KEY)); } catch (e) { return; }
+    if (!d || !d.strokes || !d.strokes.length) return;
+    var s = Math.min(window.innerWidth / d.w, window.innerHeight / d.h);
+    var ox = (window.innerWidth - d.w * s) / 2;
+    var oy = (window.innerHeight - d.h * s) / 2;
+    for (var i = 0; i < d.strokes.length; i++) {
+      var pts = d.strokes[i].map(function (p) {
+        return { x: p.x * s + ox, y: p.y * s + oy };
+      });
+      marks.push(pts);
+      boatStrokes.push(pts);
+    }
+    doneLink.textContent = 'your boat is kept for the adventure';
+    doneLink.style.display = 'block';
   }
 
   // ---- mouse ----
@@ -80,21 +177,26 @@
     if (now() - lastTouchT < 700) return;   // ignore touch-synthesized mouse events
     lastClient = { x: e.clientX, y: e.clientY };
     movePencil(e.clientX, e.clientY);
-    if (!frozen) {
-      addPoint(e.pageX, e.pageY, pendingBreak);
-      pendingBreak = false;
-    }
+    if (frozen) return;
+    if (drawing) { extendStroke(e.pageX, e.pageY); return; }
+    addPoint(e.pageX, e.pageY, pendingBreak);
+    pendingBreak = false;
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (frozen || now() - lastTouchT < 700 || onDoneLink(e.target)) return;
+    if (drawMode) { startStroke(e.pageX, e.pageY); }
+    else { knotAt(e.pageX, e.pageY); }
+  });
+  document.addEventListener('mouseup', function () {
+    if (drawMode) endStroke();
   });
   document.addEventListener('mouseleave', function () {
     pencil.style.display = 'none';
     pendingBreak = true;
-  });
-  document.addEventListener('mousedown', function (e) {
-    if (frozen || now() - lastTouchT < 700) return;
-    knotAt(e.pageX, e.pageY);
+    if (drawMode) endStroke();
   });
   window.addEventListener('scroll', function () {
-    if (lastClient && !frozen) {
+    if (lastClient && !frozen && !drawing) {
       addPoint(lastClient.x + window.scrollX, lastClient.y + window.scrollY);
     }
   });
@@ -104,22 +206,31 @@
   document.addEventListener('touchstart', function (e) {
     var t = e.touches[0];
     lastTouchT = now();
+    if (onDoneLink(e.target)) return;
     touchStart = { x: t.clientX, y: t.clientY, t: now() };
     path = [];                               // each stroke is its own gesture
     movePencil(t.clientX, t.clientY);
-    if (!frozen) addPoint(t.clientX + window.scrollX, t.clientY + window.scrollY, true);
+    if (frozen) return;
+    if (drawMode) { startStroke(t.clientX + window.scrollX, t.clientY + window.scrollY); }
+    else { addPoint(t.clientX + window.scrollX, t.clientY + window.scrollY, true); }
   }, { passive: true });
   document.addEventListener('touchmove', function (e) {
     var t = e.touches[0];
     lastTouchT = now();
+    if (onDoneLink(e.target)) return;
     if (e.cancelable) e.preventDefault();    // draw instead of scroll
     movePencil(t.clientX, t.clientY);
-    if (!frozen) addPoint(t.clientX + window.scrollX, t.clientY + window.scrollY);
+    if (frozen) return;
+    if (drawing) { extendStroke(t.clientX + window.scrollX, t.clientY + window.scrollY); }
+    else { addPoint(t.clientX + window.scrollX, t.clientY + window.scrollY); }
   }, { passive: false });
   document.addEventListener('touchend', function (e) {
     var t = e.changedTouches[0];
     lastTouchT = now();
-    if (touchStart && !frozen &&
+    if (onDoneLink(e.target)) { touchStart = null; return; }
+    if (drawMode) {
+      endStroke();                           // a tap becomes a dot via endStroke
+    } else if (touchStart && !frozen &&
         now() - touchStart.t < 300 &&
         Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) < 10) {
       knotAt(t.clientX + window.scrollX, t.clientY + window.scrollY);
