@@ -3,7 +3,7 @@
   var TRAIL_MS = 2200;      // how long the leading mark lingers
   var PATH_MS = 3500;       // gesture memory for circle detection
   var CLOSE_DIST = 46;      // px gap that still counts as a closed loop
-  var MIN_LOOP = 260;       // min drawn length before a loop can close
+  var MIN_LOOP = 200;       // min drawn length before a loop can close
   var TIP = { x: 4, y: 87 };
 
   // ---- pencil cursor ----
@@ -12,6 +12,7 @@
   pencil.alt = '';
   pencil.style.cssText =
     'position:fixed;width:84px;height:88px;pointer-events:none;z-index:10000;display:none;';
+
   // ---- drawing canvas ----
   var canvas = document.createElement('canvas');
   canvas.style.cssText =
@@ -31,37 +32,66 @@
   function mount() {
     document.body.appendChild(pencil);
     document.body.appendChild(canvas);
+    // the page is a drawing surface: fingers draw, they don't pan or zoom
+    document.documentElement.style.touchAction = 'none';
+    document.body.style.touchAction = 'none';
   }
   if (document.body) { mount(); }
   else { document.addEventListener('DOMContentLoaded', mount); }
 
-  var trail = [];   // {x,y,t} in page coords
+  var trail = [];   // {x,y,t,brk} in page coords; brk = start of a new stroke
   var marks = [];   // permanent polylines: arrays of {x,y}
   var path = [];    // recent gesture for loop detection
   var lastClient = null;
   var frozen = false;
+  var pendingBreak = false;
+  var lastTouchT = -1e9;
 
   function now() { return performance.now(); }
 
-  function addPoint(px, py) {
+  function movePencil(clientX, clientY) {
+    pencil.style.display = 'block';
+    pencil.style.left = (clientX - TIP.x) + 'px';
+    pencil.style.top = (clientY - TIP.y) + 'px';
+  }
+
+  function addPoint(px, py, brk) {
     var t = now();
     var last = trail[trail.length - 1];
-    if (last && Math.abs(last.x - px) < 2 && Math.abs(last.y - py) < 2) return;
-    trail.push({ x: px, y: py, t: t });
+    if (last && !brk && Math.abs(last.x - px) < 2 && Math.abs(last.y - py) < 2) return;
+    trail.push({ x: px, y: py, t: t, brk: !!brk });
     path.push({ x: px, y: py, t: t });
     while (path.length && t - path[0].t > PATH_MS) path.shift();
     checkLoop();
   }
 
+  // a click (or a quick tap) leaves a little scribbled knot
+  function knotAt(px, py) {
+    var pts = [];
+    for (var i = 0; i < 16; i++) {
+      var a = i * 2.1, r = 2.5 + i * 0.55;
+      pts.push({ x: px + Math.cos(a) * r, y: py + Math.sin(a) * r * 0.8 });
+    }
+    marks.push(pts);
+  }
+
+  // ---- mouse ----
   document.addEventListener('mousemove', function (e) {
+    if (now() - lastTouchT < 700) return;   // ignore touch-synthesized mouse events
     lastClient = { x: e.clientX, y: e.clientY };
-    pencil.style.display = 'block';
-    pencil.style.left = (e.clientX - TIP.x) + 'px';
-    pencil.style.top = (e.clientY - TIP.y) + 'px';
-    if (!frozen) addPoint(e.pageX, e.pageY);
+    movePencil(e.clientX, e.clientY);
+    if (!frozen) {
+      addPoint(e.pageX, e.pageY, pendingBreak);
+      pendingBreak = false;
+    }
   });
   document.addEventListener('mouseleave', function () {
     pencil.style.display = 'none';
+    pendingBreak = true;
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (frozen || now() - lastTouchT < 700) return;
+    knotAt(e.pageX, e.pageY);
   });
   window.addEventListener('scroll', function () {
     if (lastClient && !frozen) {
@@ -69,15 +99,32 @@
     }
   });
 
-  // a click leaves a little scribbled knot
-  document.addEventListener('mousedown', function (e) {
-    if (frozen) return;
-    var pts = [];
-    for (var i = 0; i < 16; i++) {
-      var a = i * 2.1, r = 2.5 + i * 0.55;
-      pts.push({ x: e.pageX + Math.cos(a) * r, y: e.pageY + Math.sin(a) * r * 0.8 });
+  // ---- touch: the finger is the pencil ----
+  var touchStart = null;
+  document.addEventListener('touchstart', function (e) {
+    var t = e.touches[0];
+    lastTouchT = now();
+    touchStart = { x: t.clientX, y: t.clientY, t: now() };
+    path = [];                               // each stroke is its own gesture
+    movePencil(t.clientX, t.clientY);
+    if (!frozen) addPoint(t.clientX + window.scrollX, t.clientY + window.scrollY, true);
+  }, { passive: true });
+  document.addEventListener('touchmove', function (e) {
+    var t = e.touches[0];
+    lastTouchT = now();
+    if (e.cancelable) e.preventDefault();    // draw instead of scroll
+    movePencil(t.clientX, t.clientY);
+    if (!frozen) addPoint(t.clientX + window.scrollX, t.clientY + window.scrollY);
+  }, { passive: false });
+  document.addEventListener('touchend', function (e) {
+    var t = e.changedTouches[0];
+    lastTouchT = now();
+    if (touchStart && !frozen &&
+        now() - touchStart.t < 300 &&
+        Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) < 10) {
+      knotAt(t.clientX + window.scrollX, t.clientY + window.scrollY);
     }
-    marks.push(pts);
+    touchStart = null;
   });
 
   // ---- circle-the-answer detection ----
@@ -161,7 +208,7 @@
     for (var m = 0; m < marks.length; m++) stroke(marks[m], 0.9, 3);
     for (var i = 1; i < trail.length; i++) {
       var a = trail[i];
-      if (t - a.t > TRAIL_MS) continue;
+      if (a.brk || t - a.t > TRAIL_MS) continue;
       stroke([trail[i - 1], a], 0.75 * (1 - (t - a.t) / TRAIL_MS), 2.5);
     }
     ctx.globalAlpha = 1;
