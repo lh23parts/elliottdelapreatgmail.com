@@ -9,6 +9,7 @@
       margin: 0;
       min-height: 100vh;
       background: #fff;
+      cursor: none;
     }
     body {
       display: grid;
@@ -19,10 +20,14 @@
     img {
       max-width: min(1100px, 100%);
       height: auto;
+      -webkit-user-select: none;
+      user-select: none;
     }
   </style>
 </head>
 <body>
-  <img src="note.png" alt="Handwritten note reading: It is important to matte stuff? Yes, I agree — No">
+  <img id="note" src="note.png" draggable="false"
+       alt="Handwritten note reading: It is important to matte stuff? Yes, I agree — No. Circle an answer with the pencil.">
+  <script src="pencil.js"></script>
 </body>
 </html>
