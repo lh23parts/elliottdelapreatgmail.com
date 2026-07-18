@@ -73,9 +73,13 @@
     var last = trail[trail.length - 1];
     if (last && !brk && Math.abs(last.x - px) < 2 && Math.abs(last.y - py) < 2) return;
     trail.push({ x: px, y: py, t: t, brk: !!brk });
+    pathPush(px, py, t);
+  }
+
+  function pathPush(px, py, t) {
     path.push({ x: px, y: py, t: t });
     while (path.length && t - path[0].t > PATH_MS) path.shift();
-    if (!drawMode) checkLoop();
+    checkLoop();
   }
 
   // a click (or a quick tap) leaves a little scribbled knot
@@ -106,10 +110,16 @@
     var last = drawing[drawing.length - 1];
     if (Math.abs(last.x - px) < 2 && Math.abs(last.y - py) < 2) return;
     drawing.push({ x: px, y: py });
+    pathPush(px, py, now());   // a drawn circle can lasso the button too
   }
 
   function endStroke() {
     if (!drawing) return;
+    if (frozen) {              // the lasso fired mid-stroke; select() keeps its own copy
+      marks.splice(marks.indexOf(drawing), 1);
+      drawing = null;
+      return;
+    }
     var len = 0;
     for (var i = 1; i < drawing.length; i++) {
       len += Math.hypot(drawing[i].x - drawing[i - 1].x, drawing[i].y - drawing[i - 1].y);
@@ -133,26 +143,18 @@
     showReady();
   }
 
-  function showReady() {          // the hand-drawn "ok my boat is done"
+  function showReady() {          // the hand-drawn "ok my boat is done" — circle it to launch
     doneLink.textContent = '';
     doneLink.appendChild(doneImg);
-    doneLink.style.textDecoration = 'none';
-    doneLink.style.display = 'block';
-  }
-
-  function showKept() {
-    doneLink.textContent = 'your boat is kept for the adventure';
-    doneLink.style.textDecoration = 'underline';
     doneLink.style.display = 'block';
   }
 
   function makeDoneLink() {
     doneLink = document.createElement('button');
     doneLink.type = 'button';
-    doneLink.setAttribute('aria-label', 'ok my boat is done');
+    doneLink.setAttribute('aria-label', 'ok my boat is done — circle it to launch the boat');
     doneLink.style.cssText =
       'position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:10001;' +
-      "font-family:'Shadows Into Light',cursive;font-size:1.6rem;color:#2f2f2f;" +
       'background:none;border:none;padding:8px 14px;cursor:none;display:none;';
     doneImg = document.createElement('img');
     doneImg.src = 'done-btn.png';
@@ -160,10 +162,6 @@
     doneImg.draggable = false;
     doneImg.style.cssText =
       'width:210px;max-width:none;height:auto;display:block;pointer-events:none;';
-    doneLink.addEventListener('click', function () {
-      saveBoat();
-      showKept();
-    });
     document.body.appendChild(doneLink);
   }
 
@@ -191,7 +189,7 @@
       marks.push(pts);
       boatStrokes.push(pts);
     }
-    showKept();
+    showReady();
   }
 
   // ---- mouse ----
@@ -260,12 +258,17 @@
     touchStart = null;
   });
 
-  // ---- circle-the-answer detection ----
+  // ---- circle-to-select detection ----
   function hotspots() {
+    var sx = window.scrollX, sy = window.scrollY;
+    if (drawMode) {              // circling the done button launches the boat
+      if (!doneLink || doneLink.style.display === 'none') return [];
+      var b = doneLink.getBoundingClientRect();
+      return [{ sail: true, cx: sx + b.left + b.width / 2, cy: sy + b.top + b.height / 2 }];
+    }
     var img = document.getElementById('note');
     if (!img) return [];
     var r = img.getBoundingClientRect();
-    var sx = window.scrollX, sy = window.scrollY;
     function spot(href, l, t, rr, b) {
       return {
         href: href,
@@ -302,7 +305,7 @@
         var spots = hotspots();
         for (var s = 0; s < spots.length; s++) {
           if (inPolygon(spots[s].cx, spots[s].cy, poly)) {
-            select(poly, spots[s].href);
+            select(poly, spots[s]);
             return;
           }
         }
@@ -310,13 +313,94 @@
     }
   }
 
-  function select(poly, href) {
+  function select(poly, spot) {
     frozen = true;
     poly = poly.slice();
     poly.push(poly[0]);
     marks.push(poly);        // the circle stays on the page, bold
     path = [];
-    setTimeout(function () { window.location.href = href; }, 420);
+    if (spot.sail) { sailAway(poly); return; }
+    setTimeout(function () { window.location.href = spot.href; }, 420);
+  }
+
+  // ---- the boat floats away on a wave ----
+  function sailAway(circlePoly) {
+    saveBoat();              // the boat is kept before it sails
+
+    // lift the drawn boat off the page canvas onto its own sprite
+    var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    boatStrokes.forEach(function (s) { s.forEach(function (p) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }); });
+    var pad = 8, bx = minX - pad, by = minY - pad;
+    var bw = (maxX - minX) + pad * 2, bh = (maxY - minY) + pad * 2;
+    var sc = document.createElement('canvas');
+    sc.width = Math.max(bw * dpr, 1);
+    sc.height = Math.max(bh * dpr, 1);
+    sc.style.cssText = 'position:fixed;left:' + bx + 'px;top:' + by + 'px;' +
+      'width:' + bw + 'px;height:' + bh + 'px;z-index:9998;pointer-events:none;';
+    var sg = sc.getContext('2d');
+    sg.setTransform(dpr, 0, 0, dpr, -bx * dpr, -by * dpr);
+    sg.strokeStyle = INK;
+    sg.lineCap = 'round';
+    sg.lineJoin = 'round';
+    sg.globalAlpha = 0.9;
+    sg.lineWidth = 3;
+    boatStrokes.forEach(function (pts) {
+      if (pts.length < 2) return;
+      sg.beginPath();
+      sg.moveTo(pts[0].x, pts[0].y);
+      for (var i = 1; i < pts.length; i++) sg.lineTo(pts[i].x, pts[i].y);
+      sg.stroke();
+    });
+    document.body.appendChild(sc);
+    marks = marks.filter(function (m) { return boatStrokes.indexOf(m) === -1; });
+
+    // the wave — an actual ocean, rising from the bottom of the page
+    var waveH = Math.round(window.innerHeight * 0.34);
+    var wave = document.createElement('div');
+    wave.setAttribute('aria-hidden', 'true');
+    wave.style.cssText = 'position:fixed;left:-2%;width:104%;bottom:0;height:' + waveH + 'px;' +
+      'background:url(wave.jpg) center 32%/cover no-repeat;z-index:9997;pointer-events:none;' +
+      '-webkit-mask-image:linear-gradient(to bottom,transparent,#000 30%);' +
+      'mask-image:linear-gradient(to bottom,transparent,#000 30%);' +
+      'transform:translateY(108%);';
+    document.body.appendChild(wave);
+
+    var crestX = window.innerWidth * 0.16;
+    var crestY = window.innerHeight - waveH * 0.85 - bh;
+    var sailDist = window.innerWidth - crestX + bw * 1.6;
+    var t0 = now();
+    function ease(u) { return u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u); }
+    setInterval(function () {
+      var t = now() - t0;
+      if (doneLink) doneLink.style.opacity = String(Math.max(1 - t / 600, 0));
+      if (t > 600 && circlePoly) {           // circle and button bow out
+        marks.splice(marks.indexOf(circlePoly), 1);
+        circlePoly = null;
+        doneLink.style.display = 'none';
+      }
+      var rise = ease((t - 300) / 1200);
+      var bob = Math.sin(t / 480) * 4 * rise;
+      wave.style.transform =
+        'translateY(' + ((1 - rise) * 108) + '%) translateY(' + bob + 'px)';
+      if (!sc.isConnected) return;
+      var u = ease((t - 900) / 1400);        // drift over to the crest
+      var x = bx + (crestX - bx) * u;
+      var y = by + (crestY - by) * u;
+      var rock = 0, scale = 1;
+      if (t > 2300) {                        // and away
+        var v = Math.min((t - 2300) / 7200, 1);
+        x = crestX + sailDist * (0.3 * v * v + 0.7 * v);
+        y = crestY + Math.sin(t / 480) * 5;
+        rock = Math.sin(t / 420) * 3.5;
+        scale = 1 - v * 0.25;
+        if (v >= 1) { sc.remove(); return; } // gone; the ocean stays
+      }
+      sc.style.transform = 'translate(' + (x - bx) + 'px,' + (y - by) + 'px) ' +
+        'rotate(' + rock + 'deg) scale(' + scale + ')';
+    }, 33);
   }
 
   // ---- render loop (interval, not rAF: keeps ticking in embedded panes) ----
