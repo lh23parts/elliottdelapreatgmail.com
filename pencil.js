@@ -21,6 +21,7 @@
   var ctx = canvas.getContext('2d');
   var dpr = 1;
   function fit() {
+    if (!window.innerWidth || !window.innerHeight) { setTimeout(fit, 50); return; }
     dpr = window.devicePixelRatio || 1;
     canvas.width = window.innerWidth * dpr;
     canvas.height = window.innerHeight * dpr;
@@ -125,23 +126,43 @@
     pendingBreak = true;
   }
 
+  var doneImg;   // created in makeDoneLink (which runs before this line executes)
+
   function boatChanged() {
     if (!doneLink) return;
-    doneLink.textContent = 'done — keep my boat';
+    showReady();
+  }
+
+  function showReady() {          // the hand-drawn "ok my boat is done"
+    doneLink.textContent = '';
+    doneLink.appendChild(doneImg);
+    doneLink.style.textDecoration = 'none';
+    doneLink.style.display = 'block';
+  }
+
+  function showKept() {
+    doneLink.textContent = 'your boat is kept for the adventure';
+    doneLink.style.textDecoration = 'underline';
     doneLink.style.display = 'block';
   }
 
   function makeDoneLink() {
     doneLink = document.createElement('button');
     doneLink.type = 'button';
+    doneLink.setAttribute('aria-label', 'ok my boat is done');
     doneLink.style.cssText =
-      'position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:10001;' +
+      'position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:10001;' +
       "font-family:'Shadows Into Light',cursive;font-size:1.6rem;color:#2f2f2f;" +
-      'background:none;border:none;padding:8px 14px;text-decoration:underline;' +
-      'cursor:none;display:none;';
+      'background:none;border:none;padding:8px 14px;cursor:none;display:none;';
+    doneImg = document.createElement('img');
+    doneImg.src = 'done-btn.png';
+    doneImg.alt = 'ok my boat is done';
+    doneImg.draggable = false;
+    doneImg.style.cssText =
+      'width:210px;max-width:none;height:auto;display:block;pointer-events:none;';
     doneLink.addEventListener('click', function () {
       saveBoat();
-      doneLink.textContent = 'your boat is kept for the adventure';
+      showKept();
     });
     document.body.appendChild(doneLink);
   }
@@ -155,6 +176,8 @@
   }
 
   function loadBoat() {
+    // viewport can be 0 for a beat in embedded panes — wait for real dimensions
+    if (!window.innerWidth || !window.innerHeight) { setTimeout(loadBoat, 50); return; }
     var d;
     try { d = JSON.parse(localStorage.getItem(BOAT_KEY)); } catch (e) { return; }
     if (!d || !d.strokes || !d.strokes.length) return;
@@ -168,8 +191,7 @@
       marks.push(pts);
       boatStrokes.push(pts);
     }
-    doneLink.textContent = 'your boat is kept for the adventure';
-    doneLink.style.display = 'block';
+    showKept();
   }
 
   // ---- mouse ----
