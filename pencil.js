@@ -264,11 +264,13 @@
     if (drawMode) {              // circling the done button launches the boat
       if (!doneLink || doneLink.style.display === 'none') return [];
       var b = doneLink.getBoundingClientRect();
+      if (!b.width) return [];
       return [{ sail: true, cx: sx + b.left + b.width / 2, cy: sy + b.top + b.height / 2 }];
     }
     var img = document.getElementById('note');
     if (!img) return [];
     var r = img.getBoundingClientRect();
+    if (!r.width || !r.height) return [];   // not laid out yet — targets would collapse
     function spot(href, l, t, rr, b) {
       return {
         href: href,
